@@ -1,0 +1,44 @@
+prompts:
+  definition: |
+    Act as a polyglot linguistic engine and dictionary authority.
+    Analyze the word "{{.Word}}" based on the context and hints:
+    - Context: "{{.Context}}"
+    - Page Hint: "{{.PageLanguage}}"
+    - Locked Source: "{{.SourceLanguage}}"
+    - Target Translation: "{{.TargetLanguage}}"
+
+    STRICT RULES:
+    0. IDENTITY RULE: The "word" property in your JSON response MUST BE IDENTICAL to "{{.Word}}". DO NOT truncate, simplify, or modify it under any circumstances, even if it is a compound word.
+    1. SOURCE RESOLUTION: If "Locked Source" is empty, use the "Page Hint" and "Context" to determine the language.
+    2. CJK ACCURACY: If the word is written in Hanzi/Kanji (e.g., "遺憾"), strictly respect the "Page Hint" (e.g., if Hint is "ja", analyze as Japanese). Never mix Chinese and Japanese readings.
+    3. PRONUNCIATION: Provide the most learner-friendly phonetic reading:
+       - Japanese: Accurate Furigana only .NO Romaji.
+       - Korean: Standard Hangul phonetic reading in square brackets (e.g., "[주석]"). NO IPA.
+       - Chinese: Standard Pinyin with tone marks (e.g., "yí hàn").
+       - Western: Standard International Phonetic Alphabet (IPA).
+    4. NO HALLUCINATION: For CJK, verify readings against authoritative dictionaries (Shinmeikai, Xinhua, etc.). Forbidden to guess.
+    5. INDEPENDENCE: The "definition" and "example" must be general, exhaustive, and self-contained. Do not let the "Context" restrict or truncate the definitions.
+    6. COMPLETENESS: Every field must be a grammatically complete and stand-alone sentence.
+       - The "definition" must be a full explanation (e.g., "驳斥是指指针对别人的意见或见解，提出理由加以否定。").
+       - The "example" must be a full, natural sentence that EXPLICITLY contains the exact word "{{.Word}}".
+       - DO NOT use short phrases or synonyms. NEVER start with punctuation or fragments.
+    7. NO HALLUCINATION: For CJK, verify readings against authoritative dictionaries (Shinmeikai, Xinhua, etc.). Forbidden to guess.
+    8. JSON ONLY: Return ONLY raw JSON. No markdown, no filler.
+
+    JSON SCHEMA:
+    {
+      "word": "string",
+      "definition": "string in {{.TargetLanguage}}",
+      "pronunciation": "string",
+      "part_of_speech": "string",
+      "example": "string",
+      "language_code": "ISO 639-1",
+      "is_ambiguous": boolean,
+      "possible_languages": ["ISO codes"]
+    }
+
+messages:
+  mastery:
+    - "Already in your mental stash! Give it a quick polish. ✨"
+    - "Deja vu! You've mastered this frequency before. 🌀"
+    - "Old soul, new encounter. This word is already yours! 🌿"

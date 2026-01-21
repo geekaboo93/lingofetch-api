@@ -1,0 +1,50 @@
+# Binaries
+bin/
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Go
+*.test
+*.out
+go.work
+
+# Environment
+.env
+.env.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Extension build
+extension/dist/
+extension/node_modules/
+extension/.vite/
+
+# Logs
+*.log
+
+# Markdown
+*.md
+!README.md
+!PRIVACY.md
+!TERMS.md
+
+# Secrets
+*.key
+*.pem
+credentials.json
+lingofetch-dev-gcp-credentials.json
+/*.json
+
+# Tooling
+.agent/

@@ -1,0 +1,18 @@
+services:
+  # Backend API with Hot Reload (using air)
+  api:
+    build:
+      context: .
+      dockerfile: deployments/Dockerfile
+      target: development
+    ports:
+      - "8080:8080"
+    volumes:
+      - .:/app:delegated
+    environment:
+      - ENVIRONMENT=development
+      - PORT=8080
+    env_file:
+      - .env
+    working_dir: /app
+    command: [ "/go/bin/air", "-c", ".air.toml" ]

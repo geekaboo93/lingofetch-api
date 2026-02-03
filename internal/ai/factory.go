@@ -9,6 +9,7 @@ import (
 type ProviderConfig struct {
 	Type   ProviderType
 	APIKey string
+	Models []string
 }
 
 // NewProvider creates a new AI provider based on the configuration
@@ -19,9 +20,9 @@ func NewProvider(ctx context.Context, config ProviderConfig) (Provider, error) {
 
 	switch config.Type {
 	case ProviderGemini:
-		return NewGeminiService(ctx, config.APIKey)
+		return NewGeminiService(ctx, config.APIKey, config.Models)
 	case ProviderLlama:
-		return NewLlamaService(ctx, config.APIKey)
+		return NewLlamaService(ctx, config.APIKey, config.Models)
 	default:
 		return nil, fmt.Errorf("unknown provider type: %s", config.Type)
 	}

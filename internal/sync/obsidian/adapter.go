@@ -224,3 +224,25 @@ views:
 
 	return finalPath, nil
 }
+
+// VerifyConnection checks if the base URL and access token are valid
+func (a *Adapter) VerifyConnection(ctx context.Context) error {
+	apiURL := fmt.Sprintf("%s/", a.baseURL)
+	req, err := http.NewRequestWithContext(ctx, "GET", apiURL, nil)
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Add("Authorization", "Bearer "+a.accessToken)
+
+	resp, err := a.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to connect to obsidian: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("obsidian returned status %d: %s", resp.StatusCode, string(body))
+	}
+	return nil
+}

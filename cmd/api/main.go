@@ -41,7 +41,11 @@ func main() {
 	}
 
 	if cfg.GeminiAPIKey != "" {
-		p, _ := ai.NewProvider(ctx, ai.ProviderConfig{Type: ai.ProviderGemini, APIKey: cfg.GeminiAPIKey})
+		p, _ := ai.NewProvider(ctx, ai.ProviderConfig{
+			Type:   ai.ProviderGemini,
+			APIKey: cfg.GeminiAPIKey,
+			Models: cfg.GeminiModels,
+		})
 		if p != nil {
 			providers[ai.ProviderGemini] = p
 			log.Printf("Initialized AI provider: gemini")
@@ -49,7 +53,11 @@ func main() {
 	}
 
 	if cfg.LlamaAPIKey != "" {
-		p, _ := ai.NewProvider(ctx, ai.ProviderConfig{Type: ai.ProviderLlama, APIKey: cfg.LlamaAPIKey})
+		p, _ := ai.NewProvider(ctx, ai.ProviderConfig{
+			Type:   ai.ProviderLlama,
+			APIKey: cfg.LlamaAPIKey,
+			Models: cfg.OpenRouterModels,
+		})
 		if p != nil {
 			providers[ai.ProviderLlama] = p
 			log.Printf("Initialized AI provider: llama")

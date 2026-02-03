@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 
 	secretmanager "cloud.google.com/go/secretmanager/apiv1"
 	"cloud.google.com/go/secretmanager/apiv1/secretmanagerpb"
@@ -30,6 +31,10 @@ type Config struct {
 
 	// Security
 	EncryptionKey string // 32-byte hex for AES-256
+
+	// AI Models
+	GeminiModels     []string
+	OpenRouterModels []string
 }
 
 // Load initializes configuration from environment variables and GCP Secret Manager
@@ -52,6 +57,9 @@ func Load() (*Config, error) {
 		NotionClientSecret: getEnv("NOTION_OAUTH_CLIENT_SECRET", ""),
 		NotionRedirectURI:  getEnv("NOTION_OAUTH_REDIRECT_URI", ""),
 		EncryptionKey:      getEnv("ENCRYPTION_KEY", ""),
+
+		GeminiModels:     getEnvList("GEMINI_MODELS", "gemini-2.5-flash,gemini-2.0-flash,gemini-1.5-flash,gemini-1.5-pro"),
+		OpenRouterModels: getEnvList("OPENROUTER_MODELS", "meta-llama/llama-3.3-70b-instruct:free,meta-llama/llama-3.1-405b-instruct:free,openai/gpt-oss-120b:free,qwen/qwen3-coder:free,deepseek/deepseek-chat:free,openai/gpt-oss-20b:free,qwen/qwen-2.5-vl-7b-instruct:free,meta-llama/llama-3.2-3b-instruct:free"),
 	}
 
 	// If running in GCP (production), fetch secrets from Secret Manager
@@ -126,4 +134,20 @@ func getEnv(key, defaultValue string) string {
 		return value
 	}
 	return defaultValue
+}
+
+// getEnvList retrieves an environment variable and splits it by comma into a slice
+func getEnvList(key, defaultValue string) []string {
+	val := getEnv(key, defaultValue)
+	if val == "" {
+		return []string{}
+	}
+	parts := strings.Split(val, ",")
+	var result []string
+	for _, p := range parts {
+		if trimmed := strings.TrimSpace(p); trimmed != "" {
+			result = append(result, trimmed)
+		}
+	}
+	return result
 }

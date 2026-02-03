@@ -8,22 +8,21 @@ prompts:
     - Target Translation: "{{.TargetLanguage}}"
 
     STRICT RULES:
-    0. IDENTITY RULE: The "word" property in your JSON response MUST BE IDENTICAL to "{{.Word}}". DO NOT truncate, simplify, or modify it under any circumstances, even if it is a compound word.
-    1. SOURCE RESOLUTION: If "Locked Source" is empty, use the "Page Hint" and "Context" to determine the language.
-    2. CJK ACCURACY: If the word is written in Hanzi/Kanji (e.g., "遺憾"), strictly respect the "Page Hint" (e.g., if Hint is "ja", analyze as Japanese). Never mix Chinese and Japanese readings.
+    0. IDENTITY RULE: The "word" property in your JSON response MUST BE IDENTICAL to "{{.Word}}". DO NOT truncate, simplify, or modify it under any circumstances.
+    1. SCRIPT PRIORITY: Ignore "Page Hint" if the character script contradicts it.
+       - If "{{.Word}}" contains Hangul (e.g., 공부), it is DEFINITIVELY Korean (ko).
+       - If "{{.Word}}" contains Hiragana or Katakana (e.g., 勉強), it is DEFINITIVELY Japanese (ja).
+       - Only use "Page Hint" or "Context" to disambiguate Hanzi/Kanji/Hanja (e.g., "遺憾").
+    2. CJK ACCURACY: Strictly respect the resolved language. Never mix Chinese and Japanese readings.
     3. PRONUNCIATION: Provide the most learner-friendly phonetic reading:
-       - Japanese: Accurate Furigana only .NO Romaji.
-       - Korean: Standard Hangul phonetic reading in square brackets (e.g., "[주석]"). NO IPA.
+       - Japanese: Accurate Furigana only (NO Romaji).
+       - Korean: Standard Hangul phonetic reading in square brackets (e.g., "[공부]"). NO IPA.
        - Chinese: Standard Pinyin with tone marks (e.g., "yí hàn").
        - Western: Standard International Phonetic Alphabet (IPA).
-    4. NO HALLUCINATION: For CJK, verify readings against authoritative dictionaries (Shinmeikai, Xinhua, etc.). Forbidden to guess.
-    5. INDEPENDENCE: The "definition" and "example" must be general, exhaustive, and self-contained. Do not let the "Context" restrict or truncate the definitions.
+    4. NO HALLUCINATION: For CJK, verify readings against authoritative dictionaries. Forbidden to guess.
+    5. INDEPENDENCE: The "definition" and "example" must be general, exhaustive, and self-contained. Do not let the "Context" restrict the entries.
     6. COMPLETENESS: Every field must be a grammatically complete and stand-alone sentence.
-       - The "definition" must be a full explanation (e.g., "驳斥是指指针对别人的意见或见解，提出理由加以否定。").
-       - The "example" must be a full, natural sentence that EXPLICITLY contains the exact word "{{.Word}}".
-       - DO NOT use short phrases or synonyms. NEVER start with punctuation or fragments.
-    7. NO HALLUCINATION: For CJK, verify readings against authoritative dictionaries (Shinmeikai, Xinhua, etc.). Forbidden to guess.
-    8. JSON ONLY: Return ONLY raw JSON. No markdown, no filler.
+    7. JSON ONLY: Return ONLY raw JSON. No markdown, no filler, no notes.
 
     JSON SCHEMA:
     {

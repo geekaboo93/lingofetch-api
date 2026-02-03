@@ -102,8 +102,9 @@ func (r *FirestoreUserRepository) CreateOrUpdateUser(ctx context.Context, user *
 		}
 	}
 
-	// Persist to Firestore using struct tags (MergeAll ensures we don't wipe existing fields not in the struct)
-	if _, err := docRef.Set(ctx, user, firestore.MergeAll); err != nil {
+	// Persist to Firestore using struct tags
+	if _, err := docRef.Set(ctx, user); err != nil {
+		fmt.Printf("[Firestore] Error: failed to persist user %s to firestore: %v\n", user.ID, err)
 		return fmt.Errorf("failed to persist user %s to firestore: %w", user.ID, err)
 	}
 

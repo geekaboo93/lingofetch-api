@@ -160,10 +160,29 @@ func (h *CaptureHandler) Handle(c *gin.Context) {
 	// 5. START AI GENERATION
 	fmt.Printf("[Trace] Triggering AI analysis using %s...\n", aiProvider.Name())
 	definition, err := aiProvider.GenerateDefinition(ctx, req.Word, targetLang, req.Context, req.PageLanguage, req.SourceLanguage)
+
+	// Fallback logic if the primary provider fails
 	if err != nil {
-		fmt.Printf("[AI] ERROR: Generation failed for '%s': %v\n", req.Word, err)
-		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Success: false, Error: err.Error()})
-		return
+		fmt.Printf("[AI] Primary provider (%s) failed for '%s': %v. Checking for fallback...\n", aiProvider.Name(), req.Word, err)
+
+		var fallbackProvider ai.Provider
+		// If Llama failed, try Gemini
+		if pType == ai.ProviderLlama {
+			fallbackProvider = h.providers[ai.ProviderGemini]
+		} else if pType == ai.ProviderGemini {
+			fallbackProvider = h.providers[ai.ProviderLlama]
+		}
+
+		if fallbackProvider != nil && fallbackProvider != aiProvider {
+			fmt.Printf("[AI] Retrying with fallback provider: %s\n", fallbackProvider.Name())
+			definition, err = fallbackProvider.GenerateDefinition(ctx, req.Word, targetLang, req.Context, req.PageLanguage, req.SourceLanguage)
+		}
+
+		if err != nil {
+			fmt.Printf("[AI] ERROR: All AI providers failed for '%s': %v\n", req.Word, err)
+			c.JSON(http.StatusInternalServerError, models.ErrorResponse{Success: false, Error: err.Error()})
+			return
+		}
 	}
 	fmt.Printf("[Trace] AI Analysis Complete: language=%s, isAmbiguous=%v\n", definition.LanguageCode, definition.IsAmbiguous)
 

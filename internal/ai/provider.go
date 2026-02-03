@@ -41,12 +41,40 @@ type WordAnalysis struct {
 
 // parseDefinition extracts structured data from AI response
 func parseDefinition(text, originalWord string) (*WordAnalysis, error) {
-	// Clean text (remove markdown code blocks if any)
-	text = strings.TrimSpace(text)
-	text = strings.TrimPrefix(text, "```json")
-	text = strings.TrimPrefix(text, "```")
-	text = strings.TrimSuffix(text, "```")
-	text = strings.TrimSpace(text)
+	// 1. Robust Extraction: Find the JSON block even if there is extra text
+	startIdx := strings.Index(text, "{")
+	endIdx := strings.LastIndex(text, "}")
+	if startIdx != -1 && endIdx != -1 && endIdx > startIdx {
+		text = text[startIdx : endIdx+1]
+	}
+
+	// 2. Fix Hallucinated Escapes: Some small models (like Llama 3B) hallucinate invalid \u escapes
+	// e.g., \uneysyanu. We'll try to escape these so the JSON parser doesn't crash.
+	// We use a byte slice to avoid corrupting multibyte UTF-8 characters.
+	fixedBytes := make([]byte, 0, len(text))
+	for i := 0; i < len(text); i++ {
+		if text[i] == '\\' && i+1 < len(text) && text[i+1] == 'u' {
+			// Check if followed by 4 hex digits
+			isHex := true
+			if i+5 >= len(text) {
+				isHex = false
+			} else {
+				for j := 2; j <= 5; j++ {
+					c := text[i+j]
+					if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+						isHex = false
+						break
+					}
+				}
+			}
+			if !isHex {
+				fixedBytes = append(fixedBytes, '\\', '\\') // Double escape the backslash
+				continue
+			}
+		}
+		fixedBytes = append(fixedBytes, text[i])
+	}
+	text = string(fixedBytes)
 
 	var analysis WordAnalysis
 	if err := json.Unmarshal([]byte(text), &analysis); err != nil {

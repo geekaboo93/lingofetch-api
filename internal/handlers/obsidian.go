@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"fmt"
+	"log"
 	"net/http"
 	"time"
 
@@ -102,11 +103,25 @@ func (h *ObsidianHandler) UpdateSettings(c *gin.Context) {
 		user.Notes.Obsidian.DefaultDatabaseName = models.DefaultDatabaseName
 	}
 	if req.AccessToken != "" {
-		encrypted, _ := crypto.Encrypt(req.AccessToken, h.cfg.EncryptionKey)
+		encrypted, err := crypto.Encrypt(req.AccessToken, h.cfg.EncryptionKey)
+		if err != nil {
+			log.Printf("[Obsidian] Encryption failed: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "encryption failed"})
+			return
+		}
 		user.Notes.Obsidian.AccessToken = encrypted
+
+		// Verify connection
+		adapter := obsidian.NewAdapter(user.Notes.Obsidian.BaseURL, req.AccessToken, "")
+		if err := adapter.VerifyConnection(ctx); err != nil {
+			log.Printf("[Obsidian] Connection verification failed for user %s: %v", req.UserID, err)
+			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("Failed to connect to Obsidian: %v", err)})
+			return
+		}
 	}
 
 	if err := h.userRepo.CreateOrUpdateUser(ctx, user); err != nil {
+		log.Printf("[Obsidian] Failed to save settings for user %s: %v", req.UserID, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save settings"})
 		return
 	}

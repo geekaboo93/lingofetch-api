@@ -1,8 +1,11 @@
 package notion
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
@@ -42,6 +45,11 @@ func (a *Adapter) ListDatabases(ctx context.Context) ([]DatabaseInfo, error) {
 
 		for _, result := range res.Results {
 			if db, ok := result.(*notionapi.Database); ok {
+				// 🛡️ Skip archived/deleted databases
+				if db.Archived {
+					continue
+				}
+
 				title := "Untitled"
 				if len(db.Title) > 0 {
 					title = db.Title[0].PlainText
@@ -146,9 +154,23 @@ func (a *Adapter) SaveWord(ctx context.Context, word *models.WordEntry) (string,
 	addProp("Example", notionapi.RichTextProperty{
 		RichText: []notionapi.RichText{{Text: &notionapi.Text{Content: word.Example}}},
 	})
-	addProp("🕒 Created", notionapi.DateProperty{
-		Date: &notionapi.DateObject{Start: (*notionapi.Date)(&word.CreatedAt)},
-	})
+	if !word.CreatedAt.IsZero() {
+		addProp("🕒 Created", notionapi.DateProperty{
+			Date: &notionapi.DateObject{Start: (*notionapi.Date)(&word.CreatedAt)},
+		})
+	} else {
+		now := time.Now()
+		addProp("🕒 Created", notionapi.DateProperty{
+			Date: &notionapi.DateObject{Start: (*notionapi.Date)(&now)},
+		})
+	}
+
+	// Log which properties we matched
+	var matchedProps []string
+	for k := range props {
+		matchedProps = append(matchedProps, k)
+	}
+	fmt.Printf("[Debug] Sending Properties to Notion: %v\n", matchedProps)
 
 	pageRequest := &notionapi.PageCreateRequest{
 		Parent:     notionapi.Parent{Type: notionapi.ParentTypeDatabaseID, DatabaseID: a.databaseID},
@@ -165,9 +187,10 @@ func (a *Adapter) SaveWord(ctx context.Context, word *models.WordEntry) (string,
 	return string(page.URL), nil
 }
 
-// FindWord checks if a word already exists in the Notion database
+// FindWord checks if a word already exists in the connected Notion database.
+// It returns the URL of the existing page if found, or an empty string.
 func (a *Adapter) FindWord(ctx context.Context, word string) (string, error) {
-	// 1. Get database schema to find the title property name
+	// 1. Resolve the title property name (usually "Name" or "Word")
 	db, err := a.client.Database.Get(ctx, a.databaseID)
 	if err != nil {
 		return "", fmt.Errorf("failed to get database schema: %w", err)
@@ -182,10 +205,10 @@ func (a *Adapter) FindWord(ctx context.Context, word string) (string, error) {
 	}
 
 	if titlePropName == "" {
-		return "", fmt.Errorf("could not find title property")
+		return "", fmt.Errorf("could not find title property for database %s", a.databaseID)
 	}
 
-	// 2. Query for the word
+	// 2. Query for the word (Note: Notion search is case-insensitive for text filters, but Equals is exact)
 	queryRequest := &notionapi.DatabaseQueryRequest{
 		Filter: &notionapi.PropertyFilter{
 			Property: titlePropName,
@@ -198,7 +221,7 @@ func (a *Adapter) FindWord(ctx context.Context, word string) (string, error) {
 
 	res, err := a.client.Database.Query(ctx, a.databaseID, queryRequest)
 	if err != nil {
-		return "", fmt.Errorf("failed to query database: %w", err)
+		return "", fmt.Errorf("notion query failed: %w", err)
 	}
 
 	if len(res.Results) > 0 {
@@ -208,30 +231,41 @@ func (a *Adapter) FindWord(ctx context.Context, word string) (string, error) {
 	return "", nil
 }
 
-// GetWords retrieves recent word entries from Notion database
+// GetWords retrieves recent word entries from the Notion database.
 func (a *Adapter) GetWords(ctx context.Context, limit int) ([]*models.WordEntry, error) {
-	// Query the database
-	queryRequest := &notionapi.DatabaseQueryRequest{
-		Sorts: []notionapi.SortObject{
-			{
-				Property:  "🕒 Created",
+	db, err := a.client.Database.Get(ctx, a.databaseID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get database schema: %w", err)
+	}
+
+	// Only sort by "🕒 Created" if the property actually exists
+	var sorts []notionapi.SortObject
+	for name := range db.Properties {
+		if strings.ToLower(name) == "🕒 created" || strings.ToLower(name) == "created" {
+			sorts = append(sorts, notionapi.SortObject{
+				Property:  name,
 				Direction: notionapi.SortOrderDESC,
-			},
-		},
+			})
+			break
+		}
+	}
+
+	queryRequest := &notionapi.DatabaseQueryRequest{
+		Sorts:    sorts,
 		PageSize: limit,
 	}
 
 	response, err := a.client.Database.Query(ctx, a.databaseID, queryRequest)
 	if err != nil {
-		return nil, fmt.Errorf("failed to query Notion database: %w", err)
+		return nil, fmt.Errorf("notion query failed: %w", err)
 	}
 
 	// Convert Notion pages to WordEntry models
 	words := make([]*models.WordEntry, 0, len(response.Results))
 	for _, page := range response.Results {
 		word := &models.WordEntry{
-			ID:        string(page.ID),
-			NotionURL: string(page.URL),
+			ID:      string(page.ID),
+			NoteURL: string(page.URL),
 		}
 
 		// Extract properties
@@ -290,8 +324,8 @@ func (a *Adapter) DiscoverDatabaseID(ctx context.Context, targetName string) (st
 	})
 	if err == nil && res != nil {
 		fmt.Printf("[Debug] [DISCOVERY] Strategy 1 found %d databases\n", len(res.Results))
-		if id, _ := findInResults(res, targetName); id != "" {
-			return id, "", nil
+		if id, pID := findInResults(res, targetName); id != "" {
+			return id, pID, nil
 		}
 	} else if err != nil {
 		fmt.Printf("[Debug] [DISCOVERY] Strategy 1 Error: %v\n", err)
@@ -347,8 +381,8 @@ func (a *Adapter) DiscoverDatabaseID(ctx context.Context, targetName string) (st
 		PageSize: 20,
 	})
 	if err == nil && res != nil && len(res.Results) > 0 {
-		if id, _ := findInResults(res, targetName); id != "" {
-			return id, "", nil
+		if id, pID := findInResults(res, targetName); id != "" {
+			return id, pID, nil
 		}
 	}
 
@@ -357,7 +391,7 @@ func (a *Adapter) DiscoverDatabaseID(ctx context.Context, targetName string) (st
 		return "", firstPageID, nil
 	}
 
-	return "", "", fmt.Errorf("no shared databases or pages found. Please ensure you have selected a page in the Notion 'Select Pages' screen.")
+	return "", "", fmt.Errorf("could not find a parent page in Notion. Please ensure you have shared at least one Page (not just a database) with the LingoFetch integration.")
 }
 
 func findInResults(res *notionapi.SearchResponse, targetName string) (string, string) {
@@ -467,4 +501,52 @@ func (a *Adapter) RenameDatabase(ctx context.Context, newName string) error {
 
 	fmt.Printf("[Debug] Successfully renamed database %s to '%s'\n", a.databaseID, newName)
 	return nil
+}
+
+// ArchiveDatabase moves the database to Notion's trash using a raw PATCH request
+func (a *Adapter) ArchiveDatabase(ctx context.Context, token string) error {
+	if a.databaseID == "" {
+		return fmt.Errorf("database ID is required for archive")
+	}
+
+	// Strategy: Notion databases can sometimes be archived via the Pages API or Databases API
+	// depending on how they were created. We try the Pages API first (standard), then Databases.
+	endpoints := []string{"pages", "databases"}
+	var lastErr error
+
+	for _, endpoint := range endpoints {
+		url := fmt.Sprintf("https://api.notion.com/v1/%s/%s", endpoint, a.databaseID)
+		body := map[string]interface{}{
+			"archived": true,
+		}
+		jsonBody, _ := json.Marshal(body)
+
+		req, err := http.NewRequestWithContext(ctx, "PATCH", url, bytes.NewBuffer(jsonBody))
+		if err != nil {
+			return err
+		}
+
+		req.Header.Add("Authorization", "Bearer "+token)
+		req.Header.Add("Notion-Version", "2022-06-28")
+		req.Header.Add("Content-Type", "application/json")
+
+		client := &http.Client{Timeout: 10 * time.Second}
+		resp, err := client.Do(req)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode == http.StatusOK {
+			fmt.Printf("[Debug] Successfully archived database %s via %s PATCH\n", a.databaseID, endpoint)
+			return nil
+		}
+
+		var errResp map[string]interface{}
+		json.NewDecoder(resp.Body).Decode(&errResp)
+		lastErr = fmt.Errorf("notion error (%s): %v (status %d)", endpoint, errResp, resp.StatusCode)
+	}
+
+	return lastErr
 }

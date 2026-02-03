@@ -12,10 +12,14 @@ import (
 	"google.golang.org/grpc/status"
 )
 
+// FirestoreUserRepository implements the Repository interface using Google Cloud Firestore.
+// It handles user profile management and word persistent storage.
 type FirestoreUserRepository struct {
 	client *firestore.Client
 }
 
+// NewUserRepository creates and initializes a new FirestoreUserRepository.
+// It requires a Google Cloud project ID and optionally a database ID (defaults to "(default)").
 func NewUserRepository(ctx context.Context, projectID, databaseID string) (*FirestoreUserRepository, error) {
 	if projectID == "" {
 		return nil, fmt.Errorf("project ID is required for Firestore")
@@ -25,7 +29,7 @@ func NewUserRepository(ctx context.Context, projectID, databaseID string) (*Fire
 	}
 	client, err := firestore.NewClientWithDatabase(ctx, projectID, databaseID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create firestore client for database %s: %w", databaseID, err)
+		return nil, fmt.Errorf("failed to create firestore client for project %s, database %s: %w", projectID, databaseID, err)
 	}
 	return &FirestoreUserRepository{client: client}, nil
 }
@@ -74,7 +78,8 @@ func (r *FirestoreUserRepository) GetUserByEmail(ctx context.Context, email stri
 	return &user, nil
 }
 
-// CreateOrUpdateUser saves/updates a user document. It handles setting default values and preserving fields.
+// CreateOrUpdateUser saves or updates a user document. It implements identity healing
+// to ensure account settings are preserved across different login sessions.
 func (r *FirestoreUserRepository) CreateOrUpdateUser(ctx context.Context, user *models.User) error {
 	if user.ID == "" {
 		return fmt.Errorf("user ID is required")
@@ -82,119 +87,122 @@ func (r *FirestoreUserRepository) CreateOrUpdateUser(ctx context.Context, user *
 
 	docRef := r.client.Collection("users").Doc(user.ID)
 
-	// Pre-fill metadata
+	// Update metadata
 	user.UpdatedAt = time.Now()
 	if user.CreatedAt.IsZero() {
 		user.CreatedAt = time.Now()
 	}
 
-	// Double-check if we need to auto-heal from another record with same email
-	if user.Email != "" && (user.NotionConfig == nil || user.NotionConfig.DatabaseID == "") {
+	// 🛠️ IDENTITY HEALING: Merges data from a potential legacy account linked to the same email.
+	// This prevents data loss during provider transitions (e.g., connecting Notion after Obsidian).
+	if user.Email != "" && (user.Notes == nil || user.Notes.Notion == nil || user.Notes.Notion.DefaultDatabaseID == "") {
 		if old, err := r.GetUserByEmail(ctx, user.Email); err == nil && old.ID != user.ID {
-			// 🛡️ Only heal if it's the SAME database name or if everything is empty
-			canHeal := false
-			if user.NotionConfig != nil && old.NotionConfig != nil {
-				if user.NotionConfig.DatabaseName == old.NotionConfig.DatabaseName {
-					canHeal = true
-				}
-			} else {
-				canHeal = true
+			fmt.Printf("[Firestore] Healing user %s data from legacy account: %s\n", user.ID, old.ID)
+			r.healUserData(user, old)
+		}
+	}
+
+	// Persist to Firestore using struct tags (MergeAll ensures we don't wipe existing fields not in the struct)
+	if _, err := docRef.Set(ctx, user, firestore.MergeAll); err != nil {
+		return fmt.Errorf("failed to persist user %s to firestore: %w", user.ID, err)
+	}
+
+	return nil
+}
+
+// healUserData merges critical configuration fields from a legacy user record into the current one.
+func (r *FirestoreUserRepository) healUserData(user, old *models.User) {
+	if old.Notes == nil {
+		return
+	}
+
+	if user.Notes == nil {
+		user.Notes = old.Notes
+		return
+	}
+
+	// Merge Notion settings
+	if old.Notes.Notion != nil {
+		if user.Notes.Notion == nil {
+			user.Notes.Notion = old.Notes.Notion
+		} else {
+			// Backfill missing critical Notion fields
+			if user.Notes.Notion.DefaultDatabaseID == "" {
+				user.Notes.Notion.DefaultDatabaseID = old.Notes.Notion.DefaultDatabaseID
+			}
+			if user.Notes.Notion.DefaultDatabaseName == "" {
+				user.Notes.Notion.DefaultDatabaseName = old.Notes.Notion.DefaultDatabaseName
+			}
+			if user.Notes.Notion.ParentPageID == "" {
+				user.Notes.Notion.ParentPageID = old.Notes.Notion.ParentPageID
+			}
+			if user.Notes.Notion.AccessToken == "" {
+				user.Notes.Notion.AccessToken = old.Notes.Notion.AccessToken
 			}
 
-			if canHeal {
-				fmt.Printf("[Firestore] Healing user %s from account %s (Matching Name: %s)\n", user.ID, old.ID, old.NotionConfig.DatabaseName)
-				if user.NotionConfig == nil {
-					user.NotionConfig = old.NotionConfig
-				} else if user.NotionConfig.DatabaseID == "" && old.NotionConfig != nil {
-					user.NotionConfig.DatabaseID = old.NotionConfig.DatabaseID
-					user.NotionConfig.AccessToken = old.NotionConfig.AccessToken
+			// Merge detected language routes
+			if old.Notes.Notion.DetectedLanguages != nil {
+				if user.Notes.Notion.DetectedLanguages == nil {
+					user.Notes.Notion.DetectedLanguages = make(map[string]models.LanguageRoute)
 				}
-				if user.AIPrefs == nil {
-					user.AIPrefs = old.AIPrefs
+				for lang, route := range old.Notes.Notion.DetectedLanguages {
+					if _, exists := user.Notes.Notion.DetectedLanguages[lang]; !exists {
+						user.Notes.Notion.DetectedLanguages[lang] = route
+					}
 				}
 			}
 		}
 	}
 
-	// Prepare data for saving
-	data := map[string]interface{}{
-		"id":         user.ID,
-		"email":      user.Email,
-		"updated_at": user.UpdatedAt,
-		"created_at": user.CreatedAt,
-	}
-
-	if user.NotionConfig != nil {
-		data["notion_config"] = map[string]interface{}{
-			"access_token":       user.NotionConfig.AccessToken,
-			"database_id":        user.NotionConfig.DatabaseID,
-			"database_name":      user.NotionConfig.DatabaseName,
-			"workspace_name":     user.NotionConfig.WorkspaceName,
-			"workspace_icon":     user.NotionConfig.WorkspaceIcon,
-			"parent_page_id":     user.NotionConfig.ParentPageID,
-			"detected_languages": user.NotionConfig.DetectedLanguages,
-			"connected_at":       user.NotionConfig.ConnectedAt,
+	// Merge Obsidian settings
+	if old.Notes.Obsidian != nil {
+		if user.Notes.Obsidian == nil {
+			user.Notes.Obsidian = old.Notes.Obsidian
+		} else {
+			if user.Notes.Obsidian.AccessToken == "" {
+				user.Notes.Obsidian.AccessToken = old.Notes.Obsidian.AccessToken
+			}
+			if user.Notes.Obsidian.DefaultDatabaseID == "" {
+				user.Notes.Obsidian.DefaultDatabaseID = old.Notes.Obsidian.DefaultDatabaseID
+			}
 		}
-	} else {
-		data["notion_config"] = firestore.Delete
 	}
 
-	if user.AIPrefs != nil {
-		data["ai_preferences"] = map[string]interface{}{
-			"default_provider": user.AIPrefs.DefaultProvider,
-			"target_language":  user.AIPrefs.TargetLanguage,
-			"custom_api_key":   user.AIPrefs.CustomAPIKey,
-		}
-	} else {
-		data["ai_preferences"] = firestore.Delete
+	// Merge AI preferences
+	if old.AIPrefs != nil && user.AIPrefs == nil {
+		user.AIPrefs = old.AIPrefs
 	}
-
-	fmt.Printf("[Firestore] Saving user %s (Email: %s, DB: %s)\n",
-		user.ID, user.Email, getDBID(user))
-
-	_, err := docRef.Set(ctx, data, firestore.MergeAll)
-	return err
 }
 
 // DeleteUser removes a user and their words subcollection
 func (r *FirestoreUserRepository) DeleteUser(ctx context.Context, userID string) error {
-	// First delete all words in subcollection (Firestore won't do this automatically)
 	col := r.client.Collection("users").Doc(userID).Collection("words")
 	bulkwriter := r.client.BulkWriter(ctx)
 	iter := col.DocumentRefs(ctx)
 	for {
-		ref, err := iter.Next()
+		docRef, err := iter.Next()
 		if err == iterator.Done {
 			break
 		}
 		if err != nil {
 			return err
 		}
-		bulkwriter.Delete(ref)
+		_, err = bulkwriter.Delete(docRef)
+		if err != nil {
+			return err
+		}
 	}
-	bulkwriter.Flush()
+	bulkwriter.End()
 
-	// Finally delete the user document
 	_, err := r.client.Collection("users").Doc(userID).Delete(ctx)
 	return err
 }
 
-func getDBID(u *models.User) string {
-	if u.NotionConfig != nil {
-		return u.NotionConfig.DatabaseID
-	}
-	return "none"
-}
-
-// SaveWord saves a word to the user's words subcollection
 func (r *FirestoreUserRepository) SaveWord(ctx context.Context, userID string, word *models.WordEntry) error {
-	// Create a subcollection Document
-	docRef := r.client.Collection("users").Doc(userID).Collection("words").Doc(word.ID)
-	_, err := docRef.Set(ctx, word)
+	_, err := r.client.Collection("users").Doc(userID).Collection("words").Doc(word.ID).Set(ctx, word)
 	return err
 }
 
-// FindWord checks if a word with the same target language already exists for the user
 func (r *FirestoreUserRepository) FindWord(ctx context.Context, userID, word, targetLanguage string) (*models.WordEntry, error) {
 	query := r.client.Collection("users").Doc(userID).Collection("words").
 		Where("word", "==", word).

@@ -48,3 +48,5 @@ lingofetch-dev-gcp-credentials.json
 
 # Tooling
 .agent/
+api
+tmp/

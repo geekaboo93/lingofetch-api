@@ -1,6 +1,8 @@
 package languages
 
 import (
+	"strings"
+
 	"golang.org/x/text/language"
 	"golang.org/x/text/language/display"
 )
@@ -20,4 +22,15 @@ func GetLanguageName(code string) string {
 		return code
 	}
 	return name
+}
+
+// GetLanguageCode attempts to normalize a language name or tag to its ISO 639-1 code
+// e.g., "English (US)" -> "en", "Chinese (Simplified)" -> "zh"
+func GetLanguageCode(input string) string {
+	tag, err := language.Parse(input)
+	if err != nil {
+		return strings.ToLower(strings.TrimSpace(input))
+	}
+	base, _ := tag.Base()
+	return base.String()
 }

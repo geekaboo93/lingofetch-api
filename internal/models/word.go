@@ -12,7 +12,7 @@ type WordEntry struct {
 	Example        string    `json:"example" firestore:"example"`
 	TargetLanguage string    `json:"target_language,omitempty" firestore:"target_language,omitempty"`
 	SourceLanguage string    `json:"source_language,omitempty" firestore:"source_language,omitempty"`
-	NotionURL      string    `json:"notion_url,omitempty" firestore:"notion_url,omitempty"`
+	NoteURL        string    `json:"note_url,omitempty" firestore:"note_url,omitempty"` // Generic URL for any note provider (Notion, Obsidian, etc.)
 	CreatedAt      time.Time `json:"created_at" firestore:"created_at"`
 }
 
@@ -37,7 +37,7 @@ type CaptureResponse struct {
 	Pronunciation     string    `json:"pronunciation"`
 	PartOfSpeech      string    `json:"part_of_speech"`
 	Example           string    `json:"example"`
-	NotionURL         string    `json:"notion_url"`
+	NoteURL           string    `json:"note_url"` // URL to the created note (Notion, Obsidian, etc.)
 	Message           string    `json:"message,omitempty"`
 	IsDuplicate       bool      `json:"is_duplicate"`
 	Timestamp         time.Time `json:"timestamp"`

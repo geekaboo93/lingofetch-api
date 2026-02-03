@@ -21,11 +21,13 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// AuthHandler manages authentication flows for different note providers (Notion, Obsidian).
 type AuthHandler struct {
 	cfg      *config.Config
 	userRepo repository.Repository
 }
 
+// NewAuthHandler creates a new AuthHandler instance.
 func NewAuthHandler(cfg *config.Config, userRepo repository.Repository) *AuthHandler {
 	return &AuthHandler{
 		cfg:      cfg,
@@ -36,7 +38,7 @@ func NewAuthHandler(cfg *config.Config, userRepo repository.Repository) *AuthHan
 // NotionLogin redirects the user to Notion's OAuth page
 func (h *AuthHandler) NotionLogin(c *gin.Context) {
 	userID := c.Query("user_id")
-	dbName := c.DefaultQuery("db_name", "LingoFetch Dictionary")
+	dbName := c.DefaultQuery("db_name", models.DefaultDatabaseName)
 
 	fmt.Printf("[Auth] Login request: user=%s, db_name=%s\n", userID, dbName)
 
@@ -63,6 +65,18 @@ func (h *AuthHandler) NotionLogin(c *gin.Context) {
 	c.Redirect(http.StatusTemporaryRedirect, authURL)
 }
 
+// ObsidianLogin serves the connection UI for Obsidian
+func (h *AuthHandler) ObsidianLogin(c *gin.Context) {
+	userID := c.Query("user_id")
+	if userID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "user_id is required"})
+		return
+	}
+
+	c.Header("Content-Type", "text/html")
+	c.String(http.StatusOK, resources.GetObsidianConnectHTML(userID))
+}
+
 // NotionCallback handles the redirect from Notion
 func (h *AuthHandler) NotionCallback(c *gin.Context) {
 	code := c.Query("code")
@@ -76,7 +90,7 @@ func (h *AuthHandler) NotionCallback(c *gin.Context) {
 	// Parse state: userID|dbName
 	parts := strings.Split(state, "|")
 	userID := parts[0]
-	targetDBName := "LingoFetch Dictionary"
+	targetDBName := models.DefaultDatabaseName
 	if len(parts) > 1 {
 		targetDBName = parts[1]
 	}
@@ -97,76 +111,50 @@ func (h *AuthHandler) NotionCallback(c *gin.Context) {
 		return
 	}
 
-	// Save or Update user in Firestore
-	user := &models.User{
-		ID:    userID,
-		Email: tokenResponse.Owner.User.Person.Email,
-		NotionConfig: &models.NotionConfig{
-			AccessToken:   encryptedToken,
-			DatabaseID:    tokenResponse.DuplicatedTemplateID,
-			DatabaseName:  targetDBName,
-			WorkspaceName: tokenResponse.WorkspaceName,
-			WorkspaceIcon: tokenResponse.WorkspaceIcon,
-			ConnectedAt:   time.Now(),
-		},
-	}
-
-	fmt.Printf("[Auth] User Model Prepared: ID=%s, Email=%s, TargetDBName=%s, ExistingDBID=%s\n",
-		user.ID, user.Email, user.NotionConfig.DatabaseName, user.NotionConfig.DatabaseID)
-
-	// 🛠️ IDENTITY REUSE LOGIC: If a user with this email already exists, migrate/reuse their data
-	if existingUser, err := h.userRepo.GetUserByEmail(context.Background(), user.Email); err == nil {
-		fmt.Printf("[Auth] Found existing matching user %s for email %s.\n", existingUser.ID, user.Email)
-
-		// 1. Inherit AI preferences from existing user if not already set by the new session
-		if existingUser.AIPrefs != nil {
-			if user.AIPrefs == nil {
-				user.AIPrefs = existingUser.AIPrefs
-			} else {
-				// Merge: keep new provider if set, but take target language if missing
-				if user.AIPrefs.DefaultProvider == "" {
-					user.AIPrefs.DefaultProvider = existingUser.AIPrefs.DefaultProvider
-				}
-				if user.AIPrefs.TargetLanguage == "" {
-					user.AIPrefs.TargetLanguage = existingUser.AIPrefs.TargetLanguage
-				}
-			}
-		}
-
-		// 2. Inherit Notion configuration
-		if existingUser.NotionConfig != nil {
-			// If the user's old dictionary had a custom name, and they didn't rename it in this new popup yet, restore it
-			if user.NotionConfig.DatabaseName == "LingoFetch Dictionary" && existingUser.NotionConfig.DatabaseName != "" {
-				user.NotionConfig.DatabaseName = existingUser.NotionConfig.DatabaseName
-			}
-
-			if user.NotionConfig.DatabaseID == "" {
-				user.NotionConfig.DatabaseID = existingUser.NotionConfig.DatabaseID
-			}
-			if user.NotionConfig.ParentPageID == "" {
-				user.NotionConfig.ParentPageID = existingUser.NotionConfig.ParentPageID
-			}
-			user.NotionConfig.DetectedLanguages = existingUser.NotionConfig.DetectedLanguages
-		}
-
-		// 3. If IDs different, cleanup old session record
-		if existingUser.ID != userID {
-			fmt.Printf("[Auth] Migrating from old ID %s to new ID %s.\n", existingUser.ID, userID)
-			if err := h.userRepo.DeleteUser(context.Background(), existingUser.ID); err != nil {
-				fmt.Printf("[Auth] Warning: failed to delete old user record %s: %v\n", existingUser.ID, err)
-			}
-		}
-	} else {
-		// If NO existing user by email, check if we already have some preferences saved for this NEW ID
-		if currentNewUser, err := h.userRepo.GetUser(context.Background(), userID); err == nil {
-			if currentNewUser.AIPrefs != nil && user.AIPrefs == nil {
-				user.AIPrefs = currentNewUser.AIPrefs
-			}
+	// 🔄 IDENTITY HEALING: Load existing user or merge from another account with same email.
+	user, err := h.userRepo.GetUser(c.Request.Context(), userID)
+	if err != nil {
+		fmt.Printf("[Auth] No existing user for ID=%s, creating or searching by email...\n", userID)
+		user = &models.User{
+			ID:        userID,
+			Email:     tokenResponse.Owner.User.Person.Email,
+			CreatedAt: time.Now(),
 		}
 	}
 
-	// 🛠️ DISCOVERY LOGIC: Try to find or create the target dictionary if we still don't have a DB ID
-	if user.NotionConfig.DatabaseID == "" {
+	// Always update common fields
+	user.Email = tokenResponse.Owner.User.Person.Email
+	user.UpdatedAt = time.Now()
+
+	// Initialize config structures
+	if user.Notes == nil {
+		user.Notes = &models.NotesConfig{}
+	}
+	user.Notes.ActiveProvider = "notion"
+
+	if user.Notes.Notion == nil {
+		user.Notes.Notion = &models.NotionConfig{}
+	}
+
+	// Use CreateOrUpdateUser which now handles deep healing logic.
+	// This keeps the handler clean and moves the complex merge logic to the repository layer.
+
+	// 3. Update Notion-specific fields from current OAuth session
+	user.Notes.Notion.AccessToken = encryptedToken
+	user.Notes.Notion.WorkspaceName = tokenResponse.WorkspaceName
+	user.Notes.Notion.WorkspaceIcon = tokenResponse.WorkspaceIcon
+	user.Notes.Notion.ConnectedAt = time.Now()
+
+	// 4. Handle Database ID/Name persistence
+	if user.Notes.Notion.DefaultDatabaseName == "" || user.Notes.Notion.DefaultDatabaseName == models.DefaultDatabaseName {
+		user.Notes.Notion.DefaultDatabaseName = targetDBName
+	}
+	if user.Notes.Notion.DefaultDatabaseID == "" {
+		user.Notes.Notion.DefaultDatabaseID = tokenResponse.DuplicatedTemplateID
+	}
+
+	// 🛠️ DISCOVERY LOGIC: Try to find or create the target dictionary if we still don't have a DB ID or Parent Page
+	if user.Notes.Notion.DefaultDatabaseID == "" || user.Notes.Notion.ParentPageID == "" {
 		fmt.Printf("[Auth] Starting discovery for '%s'...\n", targetDBName)
 		ctx := context.Background()
 		adapter := notionadapter.NewAdapter(tokenResponse.AccessToken, "")
@@ -174,17 +162,17 @@ func (h *AuthHandler) NotionCallback(c *gin.Context) {
 		if err == nil {
 			// Always save pageID if found, as it serves as the parent for future language DBs
 			if pageID != "" {
-				user.NotionConfig.ParentPageID = pageID
+				user.Notes.Notion.ParentPageID = pageID
 				fmt.Printf("[Auth] Captured ParentPageID: %s\n", pageID)
 			}
 
 			if dbID != "" {
-				user.NotionConfig.DatabaseID = dbID
+				user.Notes.Notion.DefaultDatabaseID = dbID
 				fmt.Printf("[Auth] SUCCESS: Found matching database: %s\n", dbID)
 			} else if pageID != "" {
 				fmt.Printf("[Auth] INFO: No database found, but found parent page %s. Creating new dictionary '%s'...\n", pageID, targetDBName)
 				if newDbID, err := adapter.CreateDatabase(ctx, pageID, targetDBName); err == nil {
-					user.NotionConfig.DatabaseID = newDbID
+					user.Notes.Notion.DefaultDatabaseID = newDbID
 					fmt.Printf("[Auth] SUCCESS: Created new database: %s\n", newDbID)
 				}
 			}
@@ -194,7 +182,7 @@ func (h *AuthHandler) NotionCallback(c *gin.Context) {
 	}
 
 	fmt.Printf("[Auth] Final User Save: ID=%s, DB_Name=%s, DB_ID=%s\n",
-		user.ID, user.NotionConfig.DatabaseName, user.NotionConfig.DatabaseID)
+		user.ID, user.Notes.Notion.DefaultDatabaseName, user.Notes.Notion.DefaultDatabaseID)
 
 	if err := h.userRepo.CreateOrUpdateUser(context.Background(), user); err != nil {
 		fmt.Printf("[Auth] FINAL ERROR: Failed to save user: %v\n", err)
@@ -205,7 +193,7 @@ func (h *AuthHandler) NotionCallback(c *gin.Context) {
 
 	// HTML response from embedded resource file
 	c.Header("Content-Type", "text/html")
-	c.String(http.StatusOK, resources.GetAuthSuccessHTML())
+	c.String(http.StatusOK, resources.GetAuthSuccessHTML("Notion"))
 }
 
 type notionTokenResponse struct {

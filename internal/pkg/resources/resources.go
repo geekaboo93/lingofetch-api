@@ -5,6 +5,7 @@ import (
 	_ "embed"
 	"fmt"
 	"math/rand"
+	"strings"
 	"text/template"
 	"time"
 
@@ -62,7 +63,10 @@ func GetRandomMessage(category string) string {
 	return msgs[rand.Intn(len(msgs))]
 }
 
-// GetAuthSuccessHTML returns the HTML for the authentication success page
-func GetAuthSuccessHTML() string {
-	return string(authSuccessHTML)
+// GetAuthSuccessHTML returns the HTML for the authentication success page with the provider name
+func GetAuthSuccessHTML(provider string) string {
+	if provider == "" {
+		provider = "Notion"
+	}
+	return strings.ReplaceAll(string(authSuccessHTML), "[PROVIDER]", provider)
 }

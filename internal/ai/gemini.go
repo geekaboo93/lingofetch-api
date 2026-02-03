@@ -85,8 +85,8 @@ func (s *GeminiService) GenerateDefinition(ctx context.Context, word, targetLang
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	// Make API call (Using Gemini 1.5 Flash-8B for cost efficiency)
-	url := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=%s", s.apiKey)
+	// Make API call (Using Gemini 1.5 Flash for performance and stability)
+	url := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=%s", s.apiKey)
 	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(jsonData))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)

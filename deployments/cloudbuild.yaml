@@ -1,0 +1,33 @@
+steps:
+  # Build the container image
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'build'
+      - '--target=production'
+      - '-f'
+      - 'deployments/Dockerfile'
+      - '-t'
+      - '${_IMAGE_NAME}:latest'
+      - '-t'
+      - '${_IMAGE_NAME}:${BUILD_ID}'
+      - '.'
+
+  # Push the container image to Container Registry
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'push'
+      - '${_IMAGE_NAME}:latest'
+  
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'push'
+      - '${_IMAGE_NAME}:${BUILD_ID}'
+
+images:
+  - '${_IMAGE_NAME}:latest'
+  - '${_IMAGE_NAME}:${BUILD_ID}'
+
+substitutions:
+  _IMAGE_NAME: 'gcr.io/portfolio-dev-483614/lingofetch-api-dev'
+
+timeout: 600s

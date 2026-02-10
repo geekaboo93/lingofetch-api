@@ -23,8 +23,8 @@ type Provider interface {
 type ProviderType string
 
 const (
-	ProviderGemini ProviderType = "gemini"
-	ProviderLlama  ProviderType = "llama"
+	ProviderGemini     ProviderType = "gemini"
+	ProviderOpenRouter ProviderType = "openrouter"
 )
 
 // WordAnalysis represents the AI-generated linguistic data

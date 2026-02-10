@@ -13,9 +13,9 @@ import (
 
 // Config holds all application configuration
 type Config struct {
-	Port         string
-	GeminiAPIKey string
-	LlamaAPIKey  string
+	Port             string
+	GeminiAPIKey     string
+	OpenRouterAPIKey string
 
 	NotionAPIKey        string
 	NotionDatabaseID    string
@@ -48,11 +48,11 @@ func Load() (*Config, error) {
 		FirestoreDatabaseID: getEnv("FIRESTORE_DATABASE_ID", "(default)"),
 		Environment:         getEnv("ENVIRONMENT", "development"),
 		GeminiAPIKey:        getEnv("GEMINI_API_KEY", ""),
-		LlamaAPIKey:         getEnv("LLAMA_API_KEY", ""),
+		OpenRouterAPIKey:    getEnv("OPENROUTER_API_KEY", ""),
 
 		NotionAPIKey:       getEnv("NOTION_API_KEY", ""),
 		NotionDatabaseID:   getEnv("NOTION_DATABASE_ID", ""),
-		AIProvider:         getEnv("AI_PROVIDER", "llama"),
+		AIProvider:         getEnv("AI_PROVIDER", "openrouter"),
 		NotionClientID:     getEnv("NOTION_OAUTH_CLIENT_ID", ""),
 		NotionClientSecret: getEnv("NOTION_OAUTH_CLIENT_SECRET", ""),
 		NotionRedirectURI:  getEnv("NOTION_OAUTH_REDIRECT_URI", ""),
@@ -88,7 +88,7 @@ func (c *Config) loadSecretsFromGCP() error {
 
 	// Fetch API Keys
 	c.GeminiAPIKey, _ = accessSecret(ctx, client, c.GCPProjectID, "gemini-key")
-	c.LlamaAPIKey, _ = accessSecret(ctx, client, c.GCPProjectID, "llama-key")
+	c.OpenRouterAPIKey, _ = accessSecret(ctx, client, c.GCPProjectID, "openrouter-key")
 	c.NotionAPIKey, _ = accessSecret(ctx, client, c.GCPProjectID, "notion-key")
 	c.NotionDatabaseID, _ = accessSecret(ctx, client, c.GCPProjectID, "notion-db")
 	c.FirestoreDatabaseID, _ = accessSecret(ctx, client, c.GCPProjectID, "firestore-db")

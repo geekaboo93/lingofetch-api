@@ -1,0 +1,195 @@
+name: Deploy to Cloud Run
+
+on:
+  push:
+    branches:
+      - dev        # Auto-deploy when PR is merged to dev
+      - main       # Auto-deploy when PR is merged to main
+  pull_request:
+    branches:
+      - dev
+      - main
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Deployment environment'
+        required: true
+        default: 'dev'
+        type: choice
+        options:
+          - dev
+          - staging
+          - production
+      region:
+        description: 'Deployment region'
+        required: false
+        default: 'asia-southeast1'
+        type: string
+
+env:
+  PROJECT_ID: portfolio-dev-483614
+  SERVICE_NAME: lingofetch-api
+
+jobs:
+  deploy:
+    name: Deploy to Cloud Run
+    runs-on: ubuntu-latest
+    # Only run on push (merged PRs) or manual workflow dispatch, not on PR creation
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set environment based on branch
+        id: set-env
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            # Manual deployment
+            ENV_NAME="${{ github.event.inputs.environment }}"
+            REGION="${{ github.event.inputs.region }}"
+          elif [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+            # Production deployment
+            ENV_NAME="production"
+            REGION="asia-southeast1"
+          elif [[ "${{ github.ref }}" == "refs/heads/dev" ]]; then
+            # Dev deployment
+            ENV_NAME="dev"
+            REGION="asia-southeast1"
+          else
+            # Default to dev
+            ENV_NAME="dev"
+            REGION="asia-southeast1"
+          fi
+          
+          # Set service suffix based on environment
+          if [[ "$ENV_NAME" == "production" ]]; then
+            SERVICE_SUFFIX=""
+          else
+            SERVICE_SUFFIX="-${ENV_NAME}"
+          fi
+          
+          echo "ENV_NAME=$ENV_NAME" >> $GITHUB_OUTPUT
+          echo "SERVICE_SUFFIX=$SERVICE_SUFFIX" >> $GITHUB_OUTPUT
+          echo "REGION=$REGION" >> $GITHUB_OUTPUT
+          echo "🌍 Deploying to: $ENV_NAME environment in $REGION"
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Prepare clean build directory
+        run: |
+          echo "📦 Preparing clean build directory..."
+          BUILD_DIR="${GITHUB_WORKSPACE}/build"
+          mkdir -p $BUILD_DIR/deployments
+          
+          # Copy necessary files
+          cp -r cmd $BUILD_DIR/
+          cp -r internal $BUILD_DIR/
+          cp go.mod go.sum $BUILD_DIR/
+          cp deployments/Dockerfile $BUILD_DIR/deployments/
+          cp deployments/cloudbuild.yaml $BUILD_DIR/deployments/
+          
+          # Verify cmd directory exists
+          if [ ! -d "$BUILD_DIR/cmd" ]; then
+            echo "❌ ERROR: cmd directory not copied!"
+            exit 1
+          fi
+          
+          echo "✅ Build directory prepared"
+          ls -la $BUILD_DIR/
+
+      - name: Build Docker image with Cloud Build
+        run: |
+          cd ${GITHUB_WORKSPACE}/build
+          
+          gcloud builds submit \
+            --config=deployments/cloudbuild.yaml \
+            --project ${{ env.PROJECT_ID }} \
+            --substitutions=_IMAGE_NAME="gcr.io/${{ env.PROJECT_ID }}/${{ env.SERVICE_NAME }}${{ steps.set-env.outputs.SERVICE_SUFFIX }}" \
+            --timeout=10m \
+            .
+
+      - name: Deploy to Cloud Run
+        run: |
+          gcloud run deploy ${{ env.SERVICE_NAME }}${{ steps.set-env.outputs.SERVICE_SUFFIX }} \
+            --image gcr.io/${{ env.PROJECT_ID }}/${{ env.SERVICE_NAME }}${{ steps.set-env.outputs.SERVICE_SUFFIX }}:latest \
+            --platform managed \
+            --region ${{ steps.set-env.outputs.REGION }} \
+            --allow-unauthenticated \
+            --set-env-vars="ENVIRONMENT=${{ steps.set-env.outputs.ENV_NAME }},GCP_PROJECT_ID=${{ env.PROJECT_ID }},FIRESTORE_DATABASE_ID=lingofetch-${{ steps.set-env.outputs.ENV_NAME }}" \
+            --set-secrets="API_KEY=api-key:latest,GEMINI_API_KEY=gemini-api-key:latest,OPENROUTER_API_KEY=openrouter-api-key:latest,NOTION_OAUTH_CLIENT_ID=notion-oauth-client-id:latest,NOTION_OAUTH_CLIENT_SECRET=notion-oauth-client-secret:latest,ENCRYPTION_KEY=encryption-key:latest" \
+            --memory 512Mi \
+            --cpu 1 \
+            --timeout 300 \
+            --max-instances 10 \
+            --min-instances 0 \
+            --port 8080 \
+            --project ${{ env.PROJECT_ID }}
+
+      - name: Get service URL
+        id: get-url
+        run: |
+          SERVICE_URL=$(gcloud run services describe ${{ env.SERVICE_NAME }}${{ steps.set-env.outputs.SERVICE_SUFFIX }} \
+            --platform managed \
+            --region ${{ steps.set-env.outputs.REGION }} \
+            --format 'value(status.url)' \
+            --project ${{ env.PROJECT_ID }})
+          echo "SERVICE_URL=$SERVICE_URL" >> $GITHUB_OUTPUT
+          echo "🚀 Deployed to: $SERVICE_URL"
+
+      - name: Health check
+        run: |
+          echo "⏳ Waiting for service to be ready..."
+          sleep 15
+          
+          SERVICE_URL="${{ steps.get-url.outputs.SERVICE_URL }}"
+          
+          # Try health check with retries
+          for i in {1..5}; do
+            if curl -f "$SERVICE_URL/health"; then
+              echo "✅ Health check passed!"
+              exit 0
+            fi
+            echo "⏳ Attempt $i failed, retrying..."
+            sleep 5
+          done
+          
+          echo "❌ Health check failed after 5 attempts"
+          exit 1
+
+      - name: Comment on PR (if applicable)
+        if: github.event_name == 'push' && github.event.pull_request
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `🚀 **Deployment Successful!**\n\n**Environment:** ${{ steps.set-env.outputs.ENV_NAME }}\n**Region:** ${{ steps.set-env.outputs.REGION }}\n**Service URL:** ${{ steps.get-url.outputs.SERVICE_URL }}\n\n✅ Health check passed!`
+            })
+
+      - name: Deployment summary
+        run: |
+          echo "## 🎉 Deployment Complete!" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Environment:** ${{ steps.set-env.outputs.ENV_NAME }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Region:** ${{ steps.set-env.outputs.REGION }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Service:** ${{ env.SERVICE_NAME }}${{ steps.set-env.outputs.SERVICE_SUFFIX }}" >> $GITHUB_STEP_SUMMARY
+          echo "**URL:** ${{ steps.get-url.outputs.SERVICE_URL }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Next Steps" >> $GITHUB_STEP_SUMMARY
+          echo "1. Update Notion OAuth redirect URI to: \`${{ steps.get-url.outputs.SERVICE_URL }}/api/v1/auth/notion/callback\`" >> $GITHUB_STEP_SUMMARY
+          echo "2. Update Chrome extension API endpoint to: \`${{ steps.get-url.outputs.SERVICE_URL }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "3. Test the deployment: \`curl ${{ steps.get-url.outputs.SERVICE_URL }}/health\`" >> $GITHUB_STEP_SUMMARY

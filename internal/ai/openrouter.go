@@ -7,33 +7,34 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 
 	"github.com/geekabo93/lingofetch/internal/pkg/resources"
 )
 
-// LlamaService handles AI-powered definition generation using Llama (via OpenRouter)
-type LlamaService struct {
+// OpenRouterService handles AI-powered definition generation using multiple models (via OpenRouter)
+type OpenRouterService struct {
 	apiKey     string
 	httpClient *http.Client
 	models     []string
 }
 
-// Ensure LlamaService implements Provider interface
-var _ Provider = (*LlamaService)(nil)
+// Ensure OpenRouterService implements Provider interface
+var _ Provider = (*OpenRouterService)(nil)
 
-// llamaRequest represents the request structure for Llama API
-type llamaRequest struct {
-	Model    string         `json:"model"`
-	Messages []llamaMessage `json:"messages"`
+// openRouterRequest represents the request structure for OpenRouter API
+type openRouterRequest struct {
+	Model    string              `json:"model"`
+	Messages []openRouterMessage `json:"messages"`
 }
 
-type llamaMessage struct {
+type openRouterMessage struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`
 }
 
-// llamaResponse represents the response structure from Llama API
-type llamaResponse struct {
+// openRouterResponse represents the response structure from OpenRouter API
+type openRouterResponse struct {
 	Choices []struct {
 		Message struct {
 			Content string `json:"content"`
@@ -41,26 +42,27 @@ type llamaResponse struct {
 	} `json:"choices"`
 }
 
-// NewLlamaService creates a new Llama AI service
-func NewLlamaService(ctx context.Context, apiKey string, models []string) (*LlamaService, error) {
+// NewOpenRouterService creates a new OpenRouter AI service
+func NewOpenRouterService(ctx context.Context, apiKey string, models []string) (*OpenRouterService, error) {
 	if apiKey == "" {
-		return nil, fmt.Errorf("Llama API key is required")
+		return nil, fmt.Errorf("OpenRouter API key is required")
 	}
 
 	if len(models) == 0 {
 		models = []string{
 			"meta-llama/llama-3.3-70b-instruct:free",
 			"meta-llama/llama-3.1-405b-instruct:free",
-			"openai/gpt-oss-120b:free",
-			"qwen/qwen3-coder:free",
-			"deepseek/deepseek-chat:free",
-			"openai/gpt-oss-20b:free",
-			"qwen/qwen-2.5-vl-7b-instruct:free",
+			"google/gemini-2.5-pro-exp-03-25:free",
+			"mistralai/mistral-small-3.1-24b-instruct:free",
+			"deepseek/deepseek-r1-zero:free",
+			"qwen/qwen3-coder-480b-a35b:free",
+			"upstage/solar-pro-3:free",
+			"google/gemma-3-27b:free",
 			"meta-llama/llama-3.2-3b-instruct:free",
 		}
 	}
 
-	return &LlamaService{
+	return &OpenRouterService{
 		apiKey:     apiKey,
 		httpClient: &http.Client{},
 		models:     models,
@@ -68,7 +70,7 @@ func NewLlamaService(ctx context.Context, apiKey string, models []string) (*Llam
 }
 
 // GenerateDefinition generates a definition by racing multiple free models for speed and reliability
-func (s *LlamaService) GenerateDefinition(ctx context.Context, word, targetLanguage, contextStr, pageLanguage, sourceLanguage string) (*WordAnalysis, error) {
+func (s *OpenRouterService) GenerateDefinition(ctx context.Context, word, targetLanguage, contextStr, pageLanguage, sourceLanguage string) (*WordAnalysis, error) {
 	prompt, err := resources.GetPrompt("definition", map[string]string{
 		"Word":           word,
 		"TargetLanguage": targetLanguage,
@@ -86,15 +88,16 @@ func (s *LlamaService) GenerateDefinition(ctx context.Context, word, targetLangu
 	resultChan := make(chan *WordAnalysis, len(freeModels))
 	errChan := make(chan error, len(freeModels))
 
-	// Create a cancellable context to stop other requests once one succeeds
-	raceCtx, cancel := context.WithCancel(ctx)
+	// Create a cancellable context with a 15s timeout for the racing phase
+	// This ensures we return quickly enough for fallbacks to work before the client times out
+	raceCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 
 	for _, model := range freeModels {
 		go func(m string) {
 			analysis, err := s.callModel(raceCtx, m, prompt, word)
 			if err != nil {
-				// Don't log context cancellation as a "real" error
+				// Don't log context cancellation or timeout as a "real" error
 				if raceCtx.Err() == nil {
 					fmt.Printf("[AI] Racing: Model %s failed: %v\n", m, err)
 					errChan <- err
@@ -103,6 +106,8 @@ func (s *LlamaService) GenerateDefinition(ctx context.Context, word, targetLangu
 			}
 			resultChan <- analysis
 		}(model)
+		// Small delay to prevent hitting burst rate limits
+		time.Sleep(100 * time.Millisecond)
 	}
 
 	// Wait for first success or all failures
@@ -117,16 +122,20 @@ func (s *LlamaService) GenerateDefinition(ctx context.Context, word, targetLangu
 			if failedCount >= len(freeModels) {
 				return nil, fmt.Errorf("all raced models failed to generate content")
 			}
-		case <-ctx.Done():
-			return nil, ctx.Err()
+		case <-raceCtx.Done():
+			// If we timed out or the parent context was canceled
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			return nil, fmt.Errorf("openrouter racing timed out after 15s")
 		}
 	}
 }
 
-func (s *LlamaService) callModel(ctx context.Context, model, prompt, originalWord string) (*WordAnalysis, error) {
-	reqBody := llamaRequest{
+func (s *OpenRouterService) callModel(ctx context.Context, model, prompt, originalWord string) (*WordAnalysis, error) {
+	reqBody := openRouterRequest{
 		Model: model,
-		Messages: []llamaMessage{
+		Messages: []openRouterMessage{
 			{
 				Role:    "user",
 				Content: prompt,
@@ -161,26 +170,26 @@ func (s *LlamaService) callModel(ctx context.Context, model, prompt, originalWor
 		return nil, fmt.Errorf("status %d: %s", resp.StatusCode, string(body))
 	}
 
-	var llamaResp llamaResponse
-	if err := json.NewDecoder(resp.Body).Decode(&llamaResp); err != nil {
+	var orResp openRouterResponse
+	if err := json.NewDecoder(resp.Body).Decode(&orResp); err != nil {
 		return nil, err
 	}
 
-	if len(llamaResp.Choices) == 0 {
+	if len(orResp.Choices) == 0 {
 		return nil, fmt.Errorf("no content")
 	}
 
-	text := llamaResp.Choices[0].Message.Content
+	text := orResp.Choices[0].Message.Content
 	fmt.Printf("[AI] Model %s won the race!\n", model)
 	return parseDefinition(text, originalWord)
 }
 
 // Name returns the provider name
-func (s *LlamaService) Name() string {
-	return "llama"
+func (s *OpenRouterService) Name() string {
+	return "openrouter"
 }
 
 // Close closes the HTTP client (no-op for standard client)
-func (s *LlamaService) Close() error {
+func (s *OpenRouterService) Close() error {
 	return nil
 }

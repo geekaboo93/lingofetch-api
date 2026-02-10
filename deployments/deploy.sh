@@ -29,7 +29,7 @@ gcloud run deploy ${SERVICE_NAME} \
   --region ${REGION} \
   --allow-unauthenticated \
   --set-env-vars="ENVIRONMENT=production,GCP_PROJECT_ID=${PROJECT_ID}" \
-  --set-secrets="LLAMA_API_KEY=llama-key:latest,GEMINI_API_KEY=gemini-key:latest,NOTION_API_KEY=notion-key:latest,NOTION_DATABASE_ID=notion-db:latest" \
+  --set-secrets="OPENROUTER_API_KEY=openrouter-key:latest,GEMINI_API_KEY=gemini-key:latest,NOTION_API_KEY=notion-key:latest,NOTION_DATABASE_ID=notion-db:latest" \
   --memory 512Mi \
   --cpu 1 \
   --max-instances 10 \

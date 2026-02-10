@@ -21,8 +21,8 @@ func NewProvider(ctx context.Context, config ProviderConfig) (Provider, error) {
 	switch config.Type {
 	case ProviderGemini:
 		return NewGeminiService(ctx, config.APIKey, config.Models)
-	case ProviderLlama:
-		return NewLlamaService(ctx, config.APIKey, config.Models)
+	case ProviderOpenRouter:
+		return NewOpenRouterService(ctx, config.APIKey, config.Models)
 	default:
 		return nil, fmt.Errorf("unknown provider type: %s", config.Type)
 	}
@@ -33,8 +33,8 @@ func GetProviderFromString(provider string) (ProviderType, error) {
 	switch provider {
 	case "gemini":
 		return ProviderGemini, nil
-	case "llama":
-		return ProviderLlama, nil
+	case "openrouter", "llama":
+		return ProviderOpenRouter, nil
 	case "openai":
 		return "openai", nil
 	case "claude":
@@ -43,9 +43,7 @@ func GetProviderFromString(provider string) (ProviderType, error) {
 		return "grok", nil
 	case "deepseek":
 		return "deepseek", nil
-	case "openrouter":
-		return ProviderLlama, nil // OpenRouter uses same interface as Llama
 	default:
-		return "", fmt.Errorf("unknown provider: %s (supported: gemini, llama, openai, claude, grok, deepseek, openrouter)", provider)
+		return "", fmt.Errorf("unknown provider: %s (supported: gemini, openrouter, llama, openai, claude, grok, deepseek)", provider)
 	}
 }

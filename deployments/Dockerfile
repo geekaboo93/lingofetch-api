@@ -32,8 +32,8 @@ WORKDIR /app
 # Copy binary from build-prod
 COPY --from=build-prod /lingofetch-api .
 
-# Copy credentials (for local dev accessibility)
-COPY lingofetch-dev-gcp-credentials.json /app/credentials.json
+# Note: Credentials are managed via GCP Workload Identity in Cloud Run
+# For local development, mount credentials via docker-compose or environment variables
 
 # Expose port
 EXPOSE 8080
@@ -44,4 +44,5 @@ ENV ENVIRONMENT=production
 
 # Run the application
 CMD ["/app/lingofetch-api"]
+
 

@@ -33,7 +33,7 @@ func main() {
 	ctx := context.Background()
 	providers := make(map[ai.ProviderType]ai.Provider)
 
-	defaultProviderType := ai.ProviderLlama
+	defaultProviderType := ai.ProviderOpenRouter
 	if cfg.AIProvider != "" {
 		if pt, err := ai.GetProviderFromString(cfg.AIProvider); err == nil {
 			defaultProviderType = pt
@@ -52,15 +52,15 @@ func main() {
 		}
 	}
 
-	if cfg.LlamaAPIKey != "" {
+	if cfg.OpenRouterAPIKey != "" {
 		p, _ := ai.NewProvider(ctx, ai.ProviderConfig{
-			Type:   ai.ProviderLlama,
-			APIKey: cfg.LlamaAPIKey,
+			Type:   ai.ProviderOpenRouter,
+			APIKey: cfg.OpenRouterAPIKey,
 			Models: cfg.OpenRouterModels,
 		})
 		if p != nil {
-			providers[ai.ProviderLlama] = p
-			log.Printf("Initialized AI provider: llama")
+			providers[ai.ProviderOpenRouter] = p
+			log.Printf("Initialized AI provider: openrouter")
 		}
 	}
 
@@ -121,13 +121,13 @@ func main() {
 	// Serve static assets (internal UI)
 	router.Static("/assets", "./assets")
 
-	// root health check
+	// root health check (public - no auth required)
 	router.GET("/health", healthHandler.Handle)
 
 	// API routes
 	v1 := router.Group("/api/v1")
 	{
-		// Auth routes
+		// Auth routes (public - no auth required for OAuth flow)
 		auth := v1.Group("/auth")
 		{
 			auth.GET("/notion", authHandler.NotionLogin)
@@ -135,49 +135,61 @@ func main() {
 			auth.GET("/obsidian", authHandler.ObsidianLogin)
 		}
 
-		// Info routes
-		v1.GET("/info/providers", discoveryHandler.GetSupportedNoteProviders)
-
-		// User & Provider Management routes
-		user := v1.Group("/user")
-		{
-			user.GET("/status", userHandler.GetStatus)
-			user.POST("/settings", userHandler.UpdateSettings)
-			user.POST("/disconnect", userHandler.DisconnectProvider)
-
-			user.POST("/databases", userHandler.CreateDatabase)
-
-			// Notion Specific
-			notionGroup := user.Group("/notion")
-			{
-				notionGroup.GET("/databases", notionHandler.ListDatabases)
-				notionGroup.POST("/databases", userHandler.CreateDatabase) // Point to unified handler
-				notionGroup.POST("/databases/rename", notionHandler.RenameDatabase)
-				notionGroup.POST("/databases/remove", notionHandler.RemoveDatabase)
-				notionGroup.POST("/databases/archive", notionHandler.RemoveDatabase)
-				notionGroup.POST("/sync", notionHandler.SyncWord)
-			}
-
-			// Obsidian Specific
-			obsidianGroup := user.Group("/obsidian")
-			{
-				obsidianGroup.GET("/status", obsidianHandler.GetStatus)
-				obsidianGroup.POST("/settings", obsidianHandler.UpdateSettings)
-				obsidianGroup.POST("/databases", userHandler.CreateDatabase) // Point to unified handler
-				obsidianGroup.POST("/databases/remove", obsidianHandler.RemoveDatabase)
-				obsidianGroup.POST("/sync", obsidianHandler.SyncWord)
-			}
-		}
-
-		// Capture routes
-		v1.POST("/capture", captureHandler.Handle)
+		// Public health check
 		v1.GET("/health", healthHandler.Handle)
 
-		// Compatibility routes for extension
-		v1.GET("/search", userHandler.ListDatabases)
-		v1.POST("/databases", userHandler.CreateDatabase)
-		v1.POST("/databases/*id", userHandler.ProxyQuery) // Wildcard handles both Notion IDs and Obsidian paths
-		v1.POST("/pages", userHandler.ProxyCreate)
+		// Protected routes - require API key authentication
+		protected := v1.Group("")
+		protected.Use(middleware.APIKeyAuth())
+		{
+			// Info routes
+			protected.GET("/info/providers", discoveryHandler.GetSupportedNoteProviders)
+
+			// User & Provider Management routes (require both API key and user auth)
+			user := protected.Group("/user")
+			user.Use(middleware.UserAuth())
+			{
+				user.GET("/status", userHandler.GetStatus)
+				user.POST("/settings", userHandler.UpdateSettings)
+				user.POST("/disconnect", userHandler.DisconnectProvider)
+
+				user.POST("/databases", userHandler.CreateDatabase)
+
+				// Notion Specific
+				notionGroup := user.Group("/notion")
+				{
+					notionGroup.GET("/databases", notionHandler.ListDatabases)
+					notionGroup.POST("/databases", userHandler.CreateDatabase) // Point to unified handler
+					notionGroup.POST("/databases/rename", notionHandler.RenameDatabase)
+					notionGroup.POST("/databases/remove", notionHandler.RemoveDatabase)
+					notionGroup.POST("/databases/archive", notionHandler.RemoveDatabase)
+					notionGroup.POST("/sync", notionHandler.SyncWord)
+				}
+
+				// Obsidian Specific
+				obsidianGroup := user.Group("/obsidian")
+				{
+					obsidianGroup.GET("/status", obsidianHandler.GetStatus)
+					obsidianGroup.POST("/settings", obsidianHandler.UpdateSettings)
+					obsidianGroup.POST("/databases", userHandler.CreateDatabase) // Point to unified handler
+					obsidianGroup.POST("/databases/remove", obsidianHandler.RemoveDatabase)
+					obsidianGroup.POST("/sync", obsidianHandler.SyncWord)
+				}
+			}
+
+			// Capture routes (require both API key and user auth)
+			protected.POST("/capture", middleware.UserAuth(), captureHandler.Handle)
+
+			// Compatibility routes for extension (require both API key and user auth)
+			compat := protected.Group("")
+			compat.Use(middleware.UserAuth())
+			{
+				compat.GET("/search", userHandler.ListDatabases)
+				compat.POST("/databases", userHandler.CreateDatabase)
+				compat.POST("/databases/*id", userHandler.ProxyQuery) // Wildcard handles both Notion IDs and Obsidian paths
+				compat.POST("/pages", userHandler.ProxyCreate)
+			}
+		}
 	}
 
 	// Create HTTP server

@@ -190,3 +190,4 @@ MIT License - see LICENSE file for details
 ## 🐛 Issues
 
 Report issues at: https://github.com/yourusername/lingofetch-api/issues
+

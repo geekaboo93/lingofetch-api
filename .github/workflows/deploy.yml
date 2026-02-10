@@ -113,12 +113,33 @@ jobs:
         run: |
           cd ${GITHUB_WORKSPACE}/build
           
-          gcloud builds submit \
+          echo "🏗️ Starting Cloud Build..."
+          BUILD_ID=$(gcloud builds submit \
             --config=deployments/cloudbuild.yaml \
             --project ${{ env.PROJECT_ID }} \
             --substitutions=_IMAGE_NAME="gcr.io/${{ env.PROJECT_ID }}/${{ env.SERVICE_NAME }}${{ steps.set-env.outputs.SERVICE_SUFFIX }}" \
             --timeout=10m \
-            .
+            --format="value(id)" \
+            .)
+          
+          echo "📋 Build ID: $BUILD_ID"
+          echo "🔗 Build logs: https://console.cloud.google.com/cloud-build/builds/$BUILD_ID?project=${{ env.PROJECT_ID }}"
+          
+          # Wait for build to complete
+          echo "⏳ Waiting for build to complete..."
+          gcloud builds log --stream $BUILD_ID --project ${{ env.PROJECT_ID }} || true
+          
+          # Check build status
+          BUILD_STATUS=$(gcloud builds describe $BUILD_ID --project ${{ env.PROJECT_ID }} --format="value(status)")
+          echo "📊 Build status: $BUILD_STATUS"
+          
+          if [ "$BUILD_STATUS" != "SUCCESS" ]; then
+            echo "❌ Build failed with status: $BUILD_STATUS"
+            echo "🔗 View logs: https://console.cloud.google.com/cloud-build/builds/$BUILD_ID?project=${{ env.PROJECT_ID }}"
+            exit 1
+          fi
+          
+          echo "✅ Build completed successfully!"
 
       - name: Deploy to Cloud Run
         run: |
